@@ -25,7 +25,7 @@ from bot.keyboards import (
     forced_join_menu, forced_join_settings_menu,
     add_method_menu,
 )
-from bot.states import AddAccount, SetShiftTiming, SetGroup, UseMembers
+from bot.states import AddAccount, SetShiftTiming, SetGroup, UseMembers, StartBotWizard
 
 router = Router()
 
@@ -453,17 +453,7 @@ async def cb_use_members(cb: types.CallbackQuery, state: FSMContext):
 
     if action == "start_bot":
         await cb.answer()
-        await cb.message.answer(
-            "🚀 <b>استارت ربات</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "لینک دعوت ربات هدف رو بفرست:\n"
-            "<code>https://t.me/botusername?start=xxx</code>\n"
-            "یا یوزرنیم ربات:\n"
-            "<code>@botusername</code>",
-            reply_markup=cancel_menu(),
-            parse_mode="HTML",
-        )
-        await state.set_state(UseMembers.waiting_start_bot_link)
+        await _sbw_start(cb.message, state)
 
     elif action == "join_group":
         await cb.answer()
@@ -2420,6 +2410,324 @@ async def vg_set_start_delay(msg: types.Message, state: FSMContext):
     )
     await state.clear()
 
+
+# ═══════════════════════════════════════════════════════════════
+#  StartBotWizard — wizard استارت ربات با جوین اجباری و تعداد اکانت
+# ═══════════════════════════════════════════════════════════════
+
+def _fj_ask_kb():
+    return types.InlineKeyboardMarkup(inline_keyboard=[[
+        types.InlineKeyboardButton(text="✅ بله، لینک می‌دم", callback_data="sbw:has_fj"),
+        types.InlineKeyboardButton(text="❌ رد کردن",         callback_data="sbw:no_fj"),
+    ]])
+
+def _fj_more_kb():
+    return types.InlineKeyboardMarkup(inline_keyboard=[[
+        types.InlineKeyboardButton(text="➕ بله، لینک دیگه",  callback_data="sbw:more_link"),
+        types.InlineKeyboardButton(text="✅ بعدی",             callback_data="sbw:links_done"),
+    ]])
+
+
+async def _sbw_start(msg: types.Message, state: FSMContext):
+    await state.clear()
+    await msg.answer(
+        "🚀 <b>استارت ربات — تنظیمات</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "لینک دعوت ربات هدف رو بفرست:\n"
+        "<code>https://t.me/botusername?start=xxx</code>\n"
+        "یا یوزرنیم ربات:\n"
+        "<code>@botusername</code>",
+        reply_markup=cancel_menu(),
+        parse_mode="HTML",
+    )
+    await state.set_state(StartBotWizard.waiting_bot_link)
+
+
+@router.message(StateFilter(StartBotWizard.waiting_bot_link))
+async def sbw_got_bot_link(msg: types.Message, state: FSMContext):
+    if not await guard(msg): return
+    import re
+    raw = (msg.text or "").strip()
+    if not raw:
+        await msg.answer("❌ لینک خالیه. دوباره بفرست یا انصراف بزن.")
+        return
+
+    username = None
+    start_param = None
+    deep = re.match(r"(?:https?://)?t\.me/([A-Za-z0-9_]+)\?start=(.+)", raw)
+    if deep:
+        username    = deep.group(1)
+        start_param = deep.group(2)
+    else:
+        plain = re.match(r"(?:https?://)?t\.me/([A-Za-z0-9_]+)", raw)
+        if plain:
+            username = plain.group(1)
+        elif raw.startswith("@"):
+            username = raw[1:]
+        else:
+            username = raw.lstrip("@")
+
+    if not username:
+        await msg.answer("❌ لینک معتبر نیست. دوباره بفرست.")
+        return
+
+    await state.update_data(username=username, start_param=start_param, fj_links=[])
+    await msg.answer(
+        "🔗 <b>جوین اجباری</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "ربات جوین اجباری داری؟",
+        reply_markup=_fj_ask_kb(),
+        parse_mode="HTML",
+    )
+    await state.set_state(StartBotWizard.waiting_fj_links)
+
+
+@router.callback_query(F.data == "sbw:has_fj", StateFilter(StartBotWizard.waiting_fj_links))
+async def sbw_cb_has_fj(cb: types.CallbackQuery, state: FSMContext):
+    await cb.answer()
+    await cb.message.edit_text(
+        "🔗 <b>لینک جوین اجباری</b>\n\n"
+        "لینک اول رو بفرست:\n"
+        "<code>https://t.me/+xxxxxxxx</code>  یا  <code>@channelname</code>",
+        reply_markup=cancel_menu(),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data == "sbw:no_fj", StateFilter(StartBotWizard.waiting_fj_links))
+async def sbw_cb_no_fj(cb: types.CallbackQuery, state: FSMContext):
+    await cb.answer()
+    await state.update_data(fj_links=[])
+    total = len(db.get_all_accounts())
+    await cb.message.edit_text(
+        f"🔢 <b>تعداد اکانت</b>\n\n"
+        f"کل اکانت‌های موجود: <b>{total}</b>\n\n"
+        "چند تا اکانت استارت بزنن؟\n"
+        "<code>0</code> = همه\n"
+        "مثال: <code>10</code>",
+        reply_markup=cancel_menu(),
+        parse_mode="HTML",
+    )
+    await state.set_state(StartBotWizard.waiting_acc_count)
+
+
+@router.message(StateFilter(StartBotWizard.waiting_fj_links))
+async def sbw_got_fj_link(msg: types.Message, state: FSMContext):
+    if not await guard(msg): return
+    raw = (msg.text or "").strip()
+    if not raw:
+        await msg.answer("❌ لینک خالیه. دوباره بفرست یا انصراف بزن.")
+        return
+    data  = await state.get_data()
+    links = data.get("fj_links", [])
+    links.append(raw)
+    await state.update_data(fj_links=links)
+    await msg.answer(
+        f"✅ <b>لینک {len(links)}ام دریافت شد</b>\n\n"
+        f"<code>{raw}</code>\n\n"
+        "آیا لینک دیگه‌ای هست؟",
+        reply_markup=_fj_more_kb(),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data == "sbw:more_link", StateFilter(StartBotWizard.waiting_fj_links))
+async def sbw_cb_more_link(cb: types.CallbackQuery, state: FSMContext):
+    await cb.answer()
+    data  = await state.get_data()
+    count = len(data.get("fj_links", []))
+    await cb.message.edit_text(
+        f"🔗 <b>لینک {count + 1}ام رو بفرست:</b>\n"
+        "<code>https://t.me/+xxxxxxxx</code>  یا  <code>@channelname</code>",
+        reply_markup=cancel_menu(),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data == "sbw:links_done", StateFilter(StartBotWizard.waiting_fj_links))
+async def sbw_cb_links_done(cb: types.CallbackQuery, state: FSMContext):
+    await cb.answer()
+    total = len(db.get_all_accounts())
+    await cb.message.edit_text(
+        f"🔢 <b>تعداد اکانت</b>\n\n"
+        f"کل اکانت‌های موجود: <b>{total}</b>\n\n"
+        "چند تا اکانت استارت بزنن؟\n"
+        "<code>0</code> = همه\n"
+        "مثال: <code>10</code>",
+        reply_markup=cancel_menu(),
+        parse_mode="HTML",
+    )
+    await state.set_state(StartBotWizard.waiting_acc_count)
+
+
+@router.message(StateFilter(StartBotWizard.waiting_acc_count))
+async def sbw_got_acc_count(msg: types.Message, state: FSMContext):
+    if not await guard(msg): return
+    raw = (msg.text or "").strip().translate(_FA_DIGITS)
+    if not raw.isdigit():
+        await msg.answer(
+            "❌ عدد معتبر وارد کن.\n"
+            "مثال: <code>10</code> یا <code>0</code> برای همه",
+            parse_mode="HTML",
+        )
+        return
+    await state.update_data(acc_count=int(raw))
+    await msg.answer(
+        "⏰ <b>روز ترک</b>\n\n"
+        "چند روز بعد از عضو شدن لف بدن؟\n"
+        "عدد رو بفرست. مثال: <code>4</code>",
+        reply_markup=cancel_menu(),
+        parse_mode="HTML",
+    )
+    await state.set_state(StartBotWizard.waiting_leave_days)
+
+
+@router.message(StateFilter(StartBotWizard.waiting_leave_days))
+async def sbw_got_leave_days(msg: types.Message, state: FSMContext):
+    if not await guard(msg): return
+    raw = (msg.text or "").strip().translate(_FA_DIGITS)
+    if not raw.isdigit() or int(raw) < 1:
+        await msg.answer(
+            "❌ عدد معتبر وارد کن (حداقل ۱).\n"
+            "مثال: <code>4</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    leave_days = int(raw)
+    data       = await state.get_data()
+    await state.clear()
+
+    username    = data["username"]
+    start_param = data.get("start_param")
+    fj_links    = data.get("fj_links", [])
+    acc_count   = data.get("acc_count", 0)
+    total_acc   = len(db.get_all_accounts())
+    actual      = acc_count if acc_count > 0 else total_acc
+
+    links_txt = "\n".join(f"  • <code>{l}</code>" for l in fj_links) if fj_links else "  —"
+    await msg.answer(
+        "🚀 <b>خلاصه تنظیمات</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🎯 ربات: <code>@{username}</code>\n"
+        f"🔑 پارامتر: <code>{start_param or '—'}</code>\n"
+        f"🔗 جوین اجباری ({len(fj_links)} لینک):\n{links_txt}\n"
+        f"🔢 تعداد اکانت: <b>{actual}</b>\n"
+        f"⏰ ترک بعد از: <b>{leave_days} روز</b>\n\n"
+        "در حال اجرا...",
+        parse_mode="HTML",
+    )
+    asyncio.create_task(
+        _sbw_run_task(msg, username, start_param, fj_links, acc_count, leave_days)
+    )
+
+
+async def _sbw_run_task(
+    msg:         types.Message,
+    username:    str,
+    start_param: str | None,
+    fj_links:    list,
+    acc_count:   int,
+    leave_days:  int,
+):
+    import re, json, time, random
+    from core.engine import make_client
+    from telethon.tl.functions.messages import StartBotRequest
+    from telethon.tl.functions.channels import JoinChannelRequest
+
+    accounts = db.get_all_accounts()
+    if acc_count > 0:
+        accounts = accounts[:acc_count]
+
+    total  = len(accounts)
+    ok     = 0
+    errors = []
+
+    progress_msg = await msg.answer(
+        "🚀 <b>استارت ربات در حال اجرا</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"⏳ 0 / {total} اکانت پردازش شد...",
+        parse_mode="HTML",
+    )
+
+    leave_at = time.time() + leave_days * 86400
+    try:
+        pending = json.loads(db.get_setting("fj_pending_leaves", "[]"))
+    except Exception:
+        pending = []
+
+    for idx, a in enumerate(accounts, 1):
+        c = None
+        try:
+            c = make_client(db.get_session(a["phone"]), phone=a["phone"])
+            await asyncio.wait_for(c.connect(), timeout=15)
+
+            bot_entity = await asyncio.wait_for(c.get_entity(username), timeout=15)
+            await asyncio.wait_for(
+                c(StartBotRequest(
+                    bot=bot_entity,
+                    peer=bot_entity,
+                    start_param=start_param or "",
+                )),
+                timeout=20,
+            )
+
+            for lnk in fj_links:
+                try:
+                    ch = await asyncio.wait_for(c.get_entity(lnk), timeout=15)
+                    await asyncio.wait_for(c(JoinChannelRequest(ch)), timeout=20)
+                    pending.append({"phone": a["phone"], "channel": lnk, "leave_at": leave_at})
+                    await asyncio.sleep(1.5)
+                except Exception as je:
+                    errors.append(f"{a['phone']} join {lnk}: {str(je)[:50]}")
+
+            ok += 1
+
+        except Exception as e:
+            errors.append(f"{a['phone']}: {type(e).__name__}: {str(e)[:60]}")
+        finally:
+            if c is not None:
+                try:
+                    await c.disconnect()
+                except Exception:
+                    pass
+
+        if idx % 5 == 0 or idx == total:
+            try:
+                await progress_msg.edit_text(
+                    "🚀 <b>استارت ربات در حال اجرا</b>\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"✅ {ok} / {idx} موفق\n"
+                    f"❌ {idx - ok} خطا",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+
+        if idx < total:
+            await asyncio.sleep(random.uniform(3, 7))
+
+    if pending:
+        db.set_setting("fj_pending_leaves", json.dumps(pending))
+
+    result = (
+        "✅ <b>استارت ربات تموم شد</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🎯 ربات: <code>@{username}</code>\n"
+        f"✅ موفق: <b>{ok}</b> / {total}\n"
+        f"❌ خطا: <b>{total - ok}</b>\n"
+        f"🔗 جوین اجباری: <b>{len(fj_links)} کانال</b>\n"
+        f"⏰ ترک بعد از: <b>{leave_days} روز</b>"
+    )
+    for e in errors[:5]:
+        result += f"\n🔴 <code>{e}</code>"
+    if len(errors) > 5:
+        result += f"\n... و {len(errors) - 5} خطای دیگه"
+
+    await msg.answer(result, reply_markup=main_menu(), parse_mode="HTML")
+
+
+# ═══════════════════════════════════════════════════════════════
 
 def register_handlers(dp):
     dp.include_router(router)
