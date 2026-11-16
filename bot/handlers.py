@@ -1,8 +1,11 @@
 """هندلرهای کامل ربات — aiogram 3"""
 import asyncio
+import logging
 import sys
 from datetime import datetime
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 from aiogram import types, Router, F, Bot
 from aiogram.filters import Command, StateFilter
