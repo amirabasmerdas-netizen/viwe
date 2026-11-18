@@ -199,7 +199,8 @@ class ClientPool:
             phones = list(self.all_phones)
         else:
             phones = list(self.shifts.get(shift, []))
-        await self.ensure_connected(phones, force=True)
+        # FIX Bug 2a: semaphore بزرگ‌تر → موازی‌تر → سریع‌تر از timeout 120s
+        await self.ensure_connected(phones, force=True, limit=30)
         await asyncio.to_thread(self._safe_sync)
         live = [p for p in phones if self._is_live(p)]
         return {
@@ -285,7 +286,27 @@ class ClientPool:
                 v.remove(phone)
         self.shifts[sh].append(phone)
         client = await self._connect_one(phone, force=True)
-        await asyncio.to_thread(self._safe_sync)
+
+        # ─── FIX Bug 1: فقط وقتی شیفت اکانت جدید == شیفت فعال باشه sync کن
+        # وگرنه sync_status همین اکانت رو idle می‌کنه چون توی شیفت فعال نیست
+        is_in_active = (
+            self.active_shift == 0
+            or sh == self.active_shift
+        )
+        if is_in_active:
+            # اکانت باید online باشه — مستقیم ست کن بدون sync کامل
+            if client is not None and client.is_connected():
+                try:
+                    db.set_status_bulk([phone], "online")
+                except Exception:
+                    pass
+            await asyncio.to_thread(self._safe_sync)
+        else:
+            # شیفت غیرفعال — بدون تغییر وضعیت اکانت‌های online فعلی
+            try:
+                db.update_account_status(phone, "idle", None)
+            except Exception:
+                pass
         return client
 
     async def drop(self, phone):
