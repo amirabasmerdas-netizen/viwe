@@ -1355,7 +1355,6 @@ async def cb_ns_set(cb: types.CallbackQuery):
     for idx, phone in enumerate(phones):
         bucket = (idx % n) + 1
         new_buckets[bucket].append(phone)
-        db.update_account_shift(phone, str(bucket))
     POOL.shifts = new_buckets
 
     await cb.answer(
@@ -1363,6 +1362,12 @@ async def cb_ns_set(cb: types.CallbackQuery):
         f"👥 {len(phones)} اکانت توزیع شد",
         show_alert=True,
     )
+    # FIX Bug 2b: DB calls رو از event loop خارج کن
+    def _save_shifts():
+        for idx, phone in enumerate(phones):
+            bucket = (idx % n) + 1
+            db.update_account_shift(phone, str(bucket))
+    await asyncio.to_thread(_save_shifts)
     try:
         await cb.message.edit_text(
             _build_num_shifts_text(POOL),
@@ -1387,13 +1392,19 @@ async def cb_ns_redistribute(cb: types.CallbackQuery):
     for idx, phone in enumerate(phones):
         bucket = (idx % n) + 1
         new_buckets[bucket].append(phone)
-        db.update_account_shift(phone, str(bucket))
     POOL.shifts = new_buckets
+
+    # FIX Bug 2b: DB calls رو از event loop خارج کن — blocking loop روی Supabase
+    def _save_shifts():
+        for idx, phone in enumerate(phones):
+            bucket = (idx % n) + 1
+            db.update_account_shift(phone, str(bucket))
 
     await cb.answer(
         f"✅ {len(phones)} اکانت روی {n} شیفت توزیع شد",
         show_alert=True,
     )
+    await asyncio.to_thread(_save_shifts)
     try:
         await cb.message.edit_text(
             _build_num_shifts_text(POOL),
