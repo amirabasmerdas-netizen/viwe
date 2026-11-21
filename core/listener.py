@@ -11,7 +11,7 @@ from core.engine import instant_view
 from core.pool import POOL
 from core.entity import resolve_group_entity
 from core.view_guard import VIEW_GUARD
-from core.fj_forwarder import FJ_FORWARD_QUEUE, is_forward_enabled, FJ_FORWARDER
+
 from telethon.errors import FloodWaitError
 
 _VIEW_PAUSED = False
@@ -62,9 +62,6 @@ class MultiTargetListener:
         for i in range(self.num_workers):
             w = asyncio.create_task(self._worker(i))
             self.workers.append(w)
-        # ─── FJ Forwarder ───
-        FJ_FORWARDER.start()
-
         self._warm_task = asyncio.create_task(self._warm_loop())
 
         while self.is_running:
@@ -139,12 +136,7 @@ class MultiTargetListener:
                 self.queue.put_nowait((m.id, ts))
             except asyncio.QueueFull:
                 pass
-            # ─── FJ Forward: پیام رو به forwarder هم اطلاع بده ───
-            if is_forward_enabled():
-                try:
-                    FJ_FORWARD_QUEUE.put_nowait(m.id)
-                except asyncio.QueueFull:
-                    pass
+
         if new_msgs:
             db.debug_log("listener", "queue_add", "OK",
                          f"+{len(new_msgs)} | queue: {self.queue.qsize()}")

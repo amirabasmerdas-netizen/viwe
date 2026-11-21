@@ -41,16 +41,16 @@ def forced_join_menu(enabled: bool) -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
-def forced_join_settings_menu(fwd_enabled: bool = False) -> InlineKeyboardMarkup:
+def forced_join_settings_menu(join_interval_min: int = 10, batch_size: int = 5) -> InlineKeyboardMarkup:
     """منوی تنظیمات جوین توی جوین اجباری"""
     b = InlineKeyboardBuilder()
-    fwd_lbl = "✅ فوروارد فعال" if fwd_enabled else "❌ فوروارد غیرفعال"
-    b.button(text="🔛 خاموش/روشن جوین",          callback_data="fj:toggle")
-    b.button(text=f"📤 فوروارد پست‌ها: {fwd_lbl}",  callback_data="fj:toggle_forward")
-    b.button(text="⏰ تایم ترک گروه (به روز)",      callback_data="fj:set_leave_days")
-    b.button(text="🔢 تعداد اکانت برای عضویت",      callback_data="fj:set_acc_count")
-    b.button(text="🚪 ترک همه گروه‌ها/کانال‌ها",     callback_data="fj:leave_all")
-    b.button(text="🔙 برگشت",                       callback_data="fj:back")
+    b.button(text="🔛 خاموش/روشن جوین",                        callback_data="fj:toggle")
+    b.button(text=f"⏱ فاصله جوین: {join_interval_min} دقیقه",  callback_data="fj:set_join_interval")
+    b.button(text=f"🔢 اکانت هر دور: {batch_size} تا",          callback_data="fj:set_batch_size")
+    b.button(text="⏰ تایم ترک گروه (به روز)",                   callback_data="fj:set_leave_days")
+    b.button(text="🔢 تعداد اکانت برای عضویت",                   callback_data="fj:set_acc_count")
+    b.button(text="🚪 ترک همه گروه‌ها/کانال‌ها",                  callback_data="fj:leave_all")
+    b.button(text="🔙 برگشت",                                    callback_data="fj:back")
     b.adjust(1)
     return b.as_markup()
 

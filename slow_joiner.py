@@ -1,13 +1,10 @@
 """
-Slow Joiner — هر 5 دقیقه 1 اکانت وارد گروه می‌شه
-- State در JSON (کدوم اکانت join شده)
-- خطاها لاگ می‌شن
-- Self-Healing: هر 5 دقیقه 1 اکانت
+Slow Joiner — هر N دقیقه BATCH_SIZE اکانت وارد گروه می‌شن
+تنظیمات از پنل ربات خونده می‌شه (fj_join_interval_min / fj_batch_size)
 """
 import asyncio
 import json
 import sys
-import time
 from pathlib import Path
 from datetime import datetime
 
@@ -23,15 +20,34 @@ from telethon.errors import (
     UserBannedInChannelError,
 )
 
-TARGET_USERNAME = "tabligeazade"
-JOIN_INTERVAL = 300  # 5 دقیقه
+# ─── ثابت‌های پایه ────────────────────────────────────────────
+TARGET_USERNAME      = "vornixbazarbot"   # آیدی ربات/کانال هدف
+DEFAULT_INTERVAL_MIN = 10                  # پیش‌فرض اگه DB خالی باشه (دقیقه)
+DEFAULT_BATCH_SIZE   = 5                   # پیش‌فرض اگه DB خالی باشه
 
 STATE_FILE = Path("/root/tg_master_bot/proxies/join_state.json")
-LOG_FILE = Path("/root/tg_master_bot/logs/slow_joiner.log")
+LOG_FILE   = Path("/root/tg_master_bot/logs/slow_joiner.log")
+
+
+def get_interval_sec() -> int:
+    """فاصله بین دورها رو از DB می‌خونه (ثانیه)"""
+    try:
+        minutes = int(db.get_setting("fj_join_interval_min", str(DEFAULT_INTERVAL_MIN)))
+        return max(60, minutes * 60)
+    except Exception:
+        return DEFAULT_INTERVAL_MIN * 60
+
+
+def get_batch_size() -> int:
+    """تعداد اکانت هر دور رو از DB می‌خونه"""
+    try:
+        return max(1, int(db.get_setting("fj_batch_size", str(DEFAULT_BATCH_SIZE))))
+    except Exception:
+        return DEFAULT_BATCH_SIZE
 
 
 def log(msg):
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ts   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{ts}] {msg}"
     print(line, flush=True)
     try:
@@ -60,7 +76,7 @@ def save_state(state):
 
 
 async def try_join(phone):
-    """تلاش برای join"""
+    """تلاش برای join یک اکانت"""
     ss = db.get_session(phone)
     if not ss:
         return phone, "NO_SESSION"
@@ -72,16 +88,13 @@ async def try_join(phone):
             await c.disconnect()
             return phone, "NOT_AUTH"
 
-        # چک کن قبلاً عضو هست یا نه
         try:
-            await asyncio.wait_for(
-                c.get_entity(TARGET_USERNAME), timeout=10)
+            await asyncio.wait_for(c.get_entity(TARGET_USERNAME), timeout=10)
             await c.disconnect()
             return phone, "ALREADY_MEMBER"
         except Exception:
             pass
 
-        # تلاش برای join
         try:
             await asyncio.wait_for(
                 c(functions.channels.JoinChannelRequest(channel=TARGET_USERNAME)),
@@ -106,9 +119,8 @@ async def try_join(phone):
             await c.disconnect()
             return phone, f"FLOOD:{e.seconds}"
         except Exception as e:
-            err = type(e).__name__
             await c.disconnect()
-            return phone, f"ERR:{err}"
+            return phone, f"ERR:{type(e).__name__}"
 
     except Exception as e:
         try:
@@ -118,83 +130,98 @@ async def try_join(phone):
         return phone, f"OUTER:{type(e).__name__}"
 
 
-async def pick_next_account(state):
-    """پیدا کردن اکانت بعدی که join نشده"""
+def pick_batch(state, batch_size):
+    """انتخاب batch_size اکانت بعدی که join نشدن"""
     db.init_db()
-    accounts = db.get_all_accounts()
-
+    accounts   = db.get_all_accounts()
     joined_set = set(state.get("joined", []))
     failed_map = state.get("failed", {})
+    batch      = []
 
     for acc in accounts:
+        if len(batch) >= batch_size:
+            break
         phone = acc["phone"]
         if acc.get("status") == "dead":
             continue
         if phone in joined_set:
             continue
-        # اگه قبلاً fail شده و 3 بار fail داشته، skip کن
         if failed_map.get(phone, 0) >= 3:
             continue
-        return phone
+        batch.append(phone)
 
-    return None
+    return batch
+
+
+async def run_batch(batch, state, total_accounts):
+    """اجرای موازی join برای همه اکانت‌های یک دور"""
+    tasks   = [try_join(phone) for phone in batch]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    for item in results:
+        if isinstance(item, Exception):
+            log(f"   ❌ خطای کلی: {item}")
+            continue
+
+        phone, result = item
+        log(f"   [{phone}] نتیجه: {result}")
+
+        if result in ("JOINED", "ALREADY_MEMBER"):
+            if phone not in state["joined"]:
+                state["joined"].append(phone)
+            state.get("failed", {}).pop(phone, None)
+        elif result.startswith("FLOOD:"):
+            sec = int(result.split(":")[1])
+            log(f"   🟡 {phone} FloodWait {sec}s")
+        else:
+            failed = state.setdefault("failed", {})
+            failed[phone] = failed.get(phone, 0) + 1
+
+    save_state(state)
+    log(f"   📊 موفق: {len(state['joined'])}/{total_accounts}")
 
 
 async def main():
-    log("═" * 60)
-    log(f"🚀 Slow Joiner شروع — هر {JOIN_INTERVAL}s یک اکانت")
-    log(f"📢 Target: @{TARGET_USERNAME}")
-    log("═" * 60)
-
     db.init_db()
     state = load_state()
 
-    total_accounts = len(db.get_all_accounts())
-    log(f"📊 کل اکانت‌ها: {total_accounts}")
+    interval_sec = get_interval_sec()
+    batch_size   = get_batch_size()
+    total        = len(db.get_all_accounts())
+
+    log("═" * 60)
+    log(f"🚀 Slow Joiner شروع — هر {interval_sec // 60} دقیقه | هر دور {batch_size} اکانت")
+    log(f"📢 Target: @{TARGET_USERNAME}")
+    log(f"📊 کل اکانت‌ها: {total}")
     log(f"✅ قبلاً join شده: {len(state.get('joined', []))}")
+    log("═" * 60)
 
     cycle = 0
     while True:
         cycle += 1
-        try:
-            phone = await pick_next_account(state)
 
-            if phone is None:
-                log(f"🎉 همه اکانت‌ها join شدن یا fail کردن! تموم شد.")
+        # هر دور تنظیمات رو دوباره از DB بخون (قابل تغییر در حین اجرا)
+        interval_sec = get_interval_sec()
+        batch_size   = get_batch_size()
+        total        = len(db.get_all_accounts())
+
+        try:
+            batch = pick_batch(state, batch_size)
+
+            if not batch:
+                log("🎉 همه اکانت‌ها join شدن یا fail کردن! تموم شد.")
                 log(f"   موفق: {len(state.get('joined', []))}")
                 log(f"   fail: {len(state.get('failed', {}))}")
                 break
 
-            log(f"▶️ [{cycle}] تلاش با {phone}...")
-            _, result = await try_join(phone)
-            log(f"   نتیجه: {result}")
-
-            if result in ("JOINED", "ALREADY_MEMBER"):
-                if phone not in state["joined"]:
-                    state["joined"].append(phone)
-                # از failed پاک کن
-                state.get("failed", {}).pop(phone, None)
-            elif result.startswith("FLOOD:"):
-                # flood — صبر بیشتر
-                sec = int(result.split(":")[1])
-                log(f"   🟡 FloodWait {sec}s — صبر می‌کنم")
-            else:
-                # fail — افزایش شمارنده
-                failed = state.get("failed", {})
-                failed[phone] = failed.get(phone, 0) + 1
-                state["failed"] = failed
-
-            save_state(state)
-
-            # خلاصه
-            log(f"   📊 موفق: {len(state['joined'])}/{total_accounts}")
+            log(f"▶️ دور {cycle} — {len(batch)} اکانت")
+            await run_batch(batch, state, total)
 
         except Exception as e:
             log(f"❌ چرخه {cycle}: {type(e).__name__}: {e}")
 
-        # صبر 5 دقیقه
-        log(f"   💤 صبر {JOIN_INTERVAL}s...")
-        await asyncio.sleep(JOIN_INTERVAL)
+        log(f"   💤 صبر {interval_sec}s ({interval_sec // 60} دقیقه)...")
+        await asyncio.sleep(interval_sec)
 
 
 if __name__ == "__main__":

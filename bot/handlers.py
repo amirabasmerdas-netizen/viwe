@@ -520,8 +520,10 @@ from aiogram.fsm.state import State, StatesGroup as _SG
 
 
 class _FJState(_SG):
-    waiting_leave_days = State()
-    waiting_acc_count  = State()
+    waiting_leave_days   = State()
+    waiting_acc_count    = State()
+    waiting_join_interval = State()
+    waiting_batch_size   = State()
 
 
 @router.callback_query(F.data == "fj:back")
@@ -576,61 +578,89 @@ async def cb_fj_toggle(cb: types.CallbackQuery):
 @router.callback_query(F.data == "fj:settings")
 async def cb_fj_settings(cb: types.CallbackQuery):
     await cb.answer()
-    enabled    = db.get_setting("fj_enabled", "0") == "1"
-    leave_days = int(db.get_setting("fj_leave_days", "1"))
-    acc_count  = int(db.get_setting("fj_acc_count", "0"))
-    total      = len(db.get_all_accounts())
-    status_txt = "✅ فعال" if enabled else "❌ غیرفعال"
+    enabled          = db.get_setting("fj_enabled", "0") == "1"
+    leave_days       = int(db.get_setting("fj_leave_days", "1"))
+    acc_count        = int(db.get_setting("fj_acc_count", "0"))
+    join_interval_min = int(db.get_setting("fj_join_interval_min", "10"))
+    batch_size       = int(db.get_setting("fj_batch_size", "5"))
+    total            = len(db.get_all_accounts())
+    status_txt       = "✅ فعال" if enabled else "❌ غیرفعال"
     try:
         await cb.message.edit_text(
             f"⚙️ <b>تنظیمات جوین اجباری</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"🔛 وضعیت: <b>{status_txt}</b>\n"
+            f"⏱ فاصله بین هر دور: <b>{join_interval_min} دقیقه</b>\n"
+            f"🔢 اکانت هر دور: <b>{batch_size} تا</b>\n"
             f"⏰ تایم ترک گروه: <b>{leave_days} روز</b>\n"
             f"🔢 تعداد اکانت: <b>{'همه (' + str(total) + ')' if acc_count == 0 else str(acc_count)}</b>\n\n"
             f"👇 گزینه مورد نظر:",
             reply_markup=forced_join_settings_menu(
-                fwd_enabled=db.get_setting("fj_forward_enabled","0")=="1"),
+                join_interval_min=join_interval_min,
+                batch_size=batch_size,
+            ),
             parse_mode="HTML",
         )
     except Exception:
         pass
 
 
-@router.callback_query(F.data == "fj:toggle_forward")
-async def cb_fj_toggle_forward(cb: types.CallbackQuery):
-    from core.fj_forwarder import is_forward_enabled, FJ_FORWARDER
-    current = is_forward_enabled()
-    new_val = "0" if current else "1"
-    db.set_setting("fj_forward_enabled", new_val)
-    fwd_enabled = new_val == "1"
-    if fwd_enabled:
-        FJ_FORWARDER.start()
-        label = "✅ فوروارد فعال شد"
-    else:
-        FJ_FORWARDER.stop()
-        label = "❌ فوروارد غیرفعال شد"
-    await cb.answer(f"📤 {label}", show_alert=True)
-    enabled    = db.get_setting("fj_enabled", "0") == "1"
-    leave_days = int(db.get_setting("fj_leave_days", "1"))
-    acc_count  = int(db.get_setting("fj_acc_count", "0"))
-    total      = len(db.get_all_accounts())
-    status_txt = "✅ فعال" if enabled else "❌ غیرفعال"
-    fwd_txt    = "✅ فعال" if fwd_enabled else "❌ غیرفعال"
-    try:
-        await cb.message.edit_text(
-            f"⚙️ <b>تنظیمات جوین اجباری</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"🔛 وضعیت جوین: <b>{status_txt}</b>\n"
-            f"📤 فوروارد پست‌ها: <b>{fwd_txt}</b>\n"
-            f"⏰ تایم ترک گروه: <b>{leave_days} روز</b>\n"
-            f"🔢 تعداد اکانت: <b>{'همه (' + str(total) + ')' if acc_count == 0 else str(acc_count)}</b>\n\n"
-            f"👇 گزینه مورد نظر:",
-            reply_markup=forced_join_settings_menu(fwd_enabled=fwd_enabled),
-            parse_mode="HTML",
-        )
-    except Exception:
-        pass
+@router.callback_query(F.data == "fj:set_join_interval")
+async def cb_fj_set_join_interval(cb: types.CallbackQuery, state: FSMContext):
+    await cb.answer()
+    cur = int(db.get_setting("fj_join_interval_min", "10"))
+    await cb.message.answer(
+        f"⏱ <b>فاصله بین هر دور جوین (دقیقه)</b>\n\n"
+        f"مقدار فعلی: <b>{cur} دقیقه</b>\n\n"
+        f"عدد دقیقه رو بفرست. مثال: <code>10</code>",
+        reply_markup=cancel_menu(),
+        parse_mode="HTML",
+    )
+    await state.set_state(_FJState.waiting_join_interval)
+
+
+@router.message(StateFilter(_FJState.waiting_join_interval))
+async def fj_set_join_interval(msg: types.Message, state: FSMContext):
+    if not await guard(msg): return
+    raw = (msg.text or "").strip().translate(_FA_DIGITS)
+    if not raw.isdigit() or int(raw) < 1:
+        await msg.answer("❌ عدد معتبر وارد کن (حداقل 1 دقیقه). مثال: <code>10</code>", parse_mode="HTML")
+        return
+    db.set_setting("fj_join_interval_min", raw)
+    await msg.answer(
+        f"✅ فاصله جوین تنظیم شد: <b>{raw} دقیقه</b>",
+        reply_markup=main_menu(), parse_mode="HTML",
+    )
+    await state.clear()
+
+
+@router.callback_query(F.data == "fj:set_batch_size")
+async def cb_fj_set_batch_size(cb: types.CallbackQuery, state: FSMContext):
+    await cb.answer()
+    cur = int(db.get_setting("fj_batch_size", "5"))
+    await cb.message.answer(
+        f"🔢 <b>تعداد اکانت در هر دور جوین</b>\n\n"
+        f"مقدار فعلی: <b>{cur} اکانت</b>\n\n"
+        f"عدد رو بفرست. مثال: <code>5</code>",
+        reply_markup=cancel_menu(),
+        parse_mode="HTML",
+    )
+    await state.set_state(_FJState.waiting_batch_size)
+
+
+@router.message(StateFilter(_FJState.waiting_batch_size))
+async def fj_set_batch_size(msg: types.Message, state: FSMContext):
+    if not await guard(msg): return
+    raw = (msg.text or "").strip().translate(_FA_DIGITS)
+    if not raw.isdigit() or int(raw) < 1:
+        await msg.answer("❌ عدد معتبر وارد کن (حداقل 1). مثال: <code>5</code>", parse_mode="HTML")
+        return
+    db.set_setting("fj_batch_size", raw)
+    await msg.answer(
+        f"✅ تعداد اکانت هر دور تنظیم شد: <b>{raw} اکانت</b>",
+        reply_markup=main_menu(), parse_mode="HTML",
+    )
+    await state.clear()
 
 
 @router.callback_query(F.data == "fj:set_leave_days")
