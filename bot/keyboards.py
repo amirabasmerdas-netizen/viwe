@@ -149,18 +149,17 @@ def settings_menu() -> InlineKeyboardMarkup:
 
 
 def smart_scheduler_menu(mode: str) -> InlineKeyboardMarkup:
-    """منوی مدیریت شیفت هوشمند — نمایش حالت فعلی + دکمه‌های سوئیچ"""
+    """منوی مدیریت شیفت هوشمند"""
     b = InlineKeyboardBuilder()
     if mode == "auto":
-        b.button(text="✅ حالت خودکار فعال",   callback_data="sched:noop")
-        b.button(text="🔧 رفتن به حالت دستی",  callback_data="sched:set_manual")
+        # حالت خودکار — فقط سه دکمه ضروری
+        b.button(text="📊 آمار یادگیری",        callback_data="sched:stats")
+        b.button(text="🔧 رفتن به حالت دستی",   callback_data="sched:set_manual")
+        b.button(text="🗑 ریست یادگیری",         callback_data="sched:reset_learning")
     else:
-        b.button(text="✅ حالت دستی فعال",     callback_data="sched:noop")
-        b.button(text="🤖 رفتن به حالت خودکار", callback_data="sched:set_auto")
-    b.button(text="📊 آمار یادگیری",           callback_data="sched:stats")
-    b.button(text="🔄 چرخش فوری",             callback_data="sched:rotate_now")
-    b.button(text="🗑 ریست داده یادگیری",       callback_data="sched:reset_learning")
-    b.button(text="🔙 برگشت به تنظیمات",       callback_data="menu:settings")
+        # حالت دستی — یه دکمه فعال‌سازی
+        b.button(text="🤖 فعال کردن حالت خودکار", callback_data="sched:set_auto")
+    b.button(text="🔙 برگشت به تنظیمات",        callback_data="menu:settings")
     b.adjust(1)
     return b.as_markup()
 

@@ -1223,21 +1223,35 @@ async def cb_settings(cb: types.CallbackQuery, state: FSMContext):
     data = cb.data.split(":")[1]
 
     if data == "smart_scheduler":
-        from core.smart_scheduler import get_smart_scheduler, get_mode
+        from core.smart_scheduler import get_smart_scheduler, get_mode, _SMART_STATE
+        from core.pool import POOL
         sched = get_smart_scheduler()
         mode  = get_mode()
-        mode_label = "🤖 خودکار" if mode == "auto" else "🔧 دستی"
+
+        if mode == "auto":
+            nxt_dt = _SMART_STATE.get("next_swap_at")
+            rem    = max(0, (nxt_dt - __import__("datetime").datetime.utcnow()).total_seconds()) if nxt_dt else 0
+            comp_n = _SMART_STATE.get("computed_shifts") or "؟"
+            comp_i = _SMART_STATE.get("computed_interval_sec")
+            comp_i_txt = f"{comp_i//60} دقیقه" if comp_i else "در حال یادگیری..."
+            cycles = _SMART_STATE.get("learning_cycles", 0)
+            text = (
+                f"🤖 <b>حالت خودکار فعاله</b>\n\n"
+                f"📍 شیفت فعال: <b>{POOL.active_shift}</b> / {POOL.num_shifts}\n"
+                f"⏳ چرخش بعدی: <b>{int(rem)//60}:{int(rem)%60:02d}</b>\n"
+                f"🎯 شیفت بهینه: <b>{comp_n}</b>\n"
+                f"⏱ فاصله بهینه: <b>{comp_i_txt}</b>\n"
+                f"🔁 چرخه یادگیری: <b>{cycles}</b>"
+            )
+        else:
+            text = (
+                f"🔧 <b>حالت دستی فعاله</b>\n\n"
+                f"📍 شیفت فعال: <b>{POOL.active_shift}</b> / {POOL.num_shifts}\n\n"
+                f"برای چرخش خودکار بر اساس لیمیت واقعی اکانت‌ها،\n"
+                f"حالت خودکار رو فعال کن."
+            )
         await cb.message.edit_text(
-            f"🤖 <b>مدیریت شیفت هوشمند</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"حالت فعلی: <b>{mode_label}</b>\n\n"
-            f"<b>حالت خودکار:</b>\n"
-            f"  • زمان تا لیمیت شدن هر شیفت رو اندازه می‌گیره\n"
-            f"  • زمان ریکاوری رو ثبت می‌کنه\n"
-            f"  • تعداد شیفت و فاصله چرخش رو بهینه می‌کنه\n"
-            f"  • وقتی شیفت لیمیت شد فوری چرخش می‌کنه\n\n"
-            f"<b>حالت دستی:</b>\n"
-            f"  • همان رفتار قبلی (بازه تایم از تنظیمات)\n",
+            text,
             reply_markup=smart_scheduler_menu(mode),
             parse_mode="HTML",
         )
@@ -1560,21 +1574,28 @@ async def cb_smart_sched(cb: types.CallbackQuery):
 
     elif action == "set_auto":
         set_mode("auto")
-        await cb.answer("🤖 حالت خودکار فعال شد", show_alert=True)
+        from core.pool import POOL
+        await cb.answer("🤖 خودکار فعال شد")
         await cb.message.edit_text(
-            "🤖 <b>حالت خودکار فعال شد</b>\n\n"
-            "ربات شروع می‌کنه به یادگیری چرخه لیمیت/ریکاوری.\n"
-            "بعد از چند چرخه، تعداد شیفت‌ها و فاصله چرخش رو بهینه می‌کنه.",
+            f"🤖 <b>حالت خودکار فعاله</b>\n\n"
+            f"📍 شیفت فعال: <b>{POOL.active_shift}</b> / {POOL.num_shifts}\n"
+            f"⏳ چرخش بعدی: <b>در حال محاسبه...</b>\n"
+            f"🎯 شیفت بهینه: <b>در حال یادگیری...</b>\n"
+            f"⏱ فاصله بهینه: <b>در حال یادگیری...</b>\n"
+            f"🔁 چرخه یادگیری: <b>0</b>",
             reply_markup=smart_scheduler_menu("auto"),
             parse_mode="HTML",
         )
 
     elif action == "set_manual":
         set_mode("manual")
-        await cb.answer("🔧 حالت دستی فعال شد", show_alert=True)
+        from core.pool import POOL
+        await cb.answer("🔧 دستی فعال شد")
         await cb.message.edit_text(
-            "🔧 <b>حالت دستی فعال شد</b>\n\n"
-            "چرخش بر اساس بازه تایم تنظیم‌شده انجام می‌شه.",
+            f"🔧 <b>حالت دستی فعاله</b>\n\n"
+            f"📍 شیفت فعال: <b>{POOL.active_shift}</b> / {POOL.num_shifts}\n\n"
+            f"برای چرخش خودکار بر اساس لیمیت واقعی اکانت‌ها،\n"
+            f"حالت خودکار رو فعال کن.",
             reply_markup=smart_scheduler_menu("manual"),
             parse_mode="HTML",
         )
