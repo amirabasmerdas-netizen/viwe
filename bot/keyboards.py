@@ -136,14 +136,32 @@ def stats_menu() -> InlineKeyboardMarkup:
 
 def settings_menu() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="⏱️ بازه تایم شیفت",    callback_data="set:shift_timing")
-    b.button(text="🔢 انتخاب شیفت فعال",  callback_data="set:shift_active")
-    b.button(text="🔢 تعداد شیفت‌ها",      callback_data="set:num_shifts")
-    b.button(text="🛡️ وضعیت نگهبان",      callback_data="set:guardian")
-    b.button(text="💾 بکاپ",               callback_data="set:backup")
-    b.button(text="🔒 تنظیمات ضد لیمیت",  callback_data="set:viewguard")
-    b.button(text="🔙 برگشت",              callback_data="menu:main")
+    b.button(text="🤖 مدیریت شیفت هوشمند",  callback_data="set:smart_scheduler")
+    b.button(text="⏱️ بازه تایم شیفت",       callback_data="set:shift_timing")
+    b.button(text="🔢 انتخاب شیفت فعال",     callback_data="set:shift_active")
+    b.button(text="🔢 تعداد شیفت‌ها",         callback_data="set:num_shifts")
+    b.button(text="🛡️ وضعیت نگهبان",         callback_data="set:guardian")
+    b.button(text="💾 بکاپ",                  callback_data="set:backup")
+    b.button(text="🔒 تنظیمات ضد لیمیت",     callback_data="set:viewguard")
+    b.button(text="🔙 برگشت",                 callback_data="menu:main")
     b.adjust(2)
+    return b.as_markup()
+
+
+def smart_scheduler_menu(mode: str) -> InlineKeyboardMarkup:
+    """منوی مدیریت شیفت هوشمند — نمایش حالت فعلی + دکمه‌های سوئیچ"""
+    b = InlineKeyboardBuilder()
+    if mode == "auto":
+        b.button(text="✅ حالت خودکار فعال",   callback_data="sched:noop")
+        b.button(text="🔧 رفتن به حالت دستی",  callback_data="sched:set_manual")
+    else:
+        b.button(text="✅ حالت دستی فعال",     callback_data="sched:noop")
+        b.button(text="🤖 رفتن به حالت خودکار", callback_data="sched:set_auto")
+    b.button(text="📊 آمار یادگیری",           callback_data="sched:stats")
+    b.button(text="🔄 چرخش فوری",             callback_data="sched:rotate_now")
+    b.button(text="🗑 ریست داده یادگیری",       callback_data="sched:reset_learning")
+    b.button(text="🔙 برگشت به تنظیمات",       callback_data="menu:settings")
+    b.adjust(1)
     return b.as_markup()
 
 
