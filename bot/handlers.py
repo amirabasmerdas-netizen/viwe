@@ -1592,7 +1592,9 @@ async def cb_shift_select(cb: types.CallbackQuery):
 # ─────────────────────────────────────────────────────────
 @router.callback_query(F.data.startswith("sched:"))
 async def cb_smart_sched(cb: types.CallbackQuery):
-    if not await guard(cb.message): return
+    if not is_admin(cb.from_user.id):
+        await cb.answer("⛔ دسترسی ندارید.", show_alert=True)
+        return
     action = cb.data.split(":")[1]
     from core.smart_scheduler import get_smart_scheduler, get_mode, set_mode, _SMART_STATE
 
@@ -2238,15 +2240,27 @@ async def add_phone(msg: types.Message, state: FSMContext):
     await msg.answer(f"📱 <code>{phone}</code>\n⏳ در حال ارسال کد...", parse_mode="HTML")
     c = None
     try:
-        c    = TelegramClient(StringSession(), Config.API_ID, Config.API_HASH)
+        c = TelegramClient(StringSession(), Config.API_ID, Config.API_HASH)
         await asyncio.wait_for(c.connect(), timeout=20)
-        sent = await asyncio.wait_for(c.send_code_request(phone), timeout=25)
+        try:
+            sent = await asyncio.wait_for(c.send_code_request(phone), timeout=25)
+        except Exception as migrate_err:
+            # اگر DC متفاوت بود، دوباره connect کن
+            err_str = str(migrate_err)
+            if "PHONE_MIGRATE" in err_str or "NetworkMigrateError" in err_str or "PhoneMigrateError" in err_str:
+                try: await c.disconnect()
+                except Exception: pass
+                c = TelegramClient(StringSession(), Config.API_ID, Config.API_HASH)
+                await asyncio.wait_for(c.connect(), timeout=20)
+                sent = await asyncio.wait_for(c.send_code_request(phone), timeout=25)
+            else:
+                raise
         _pending_clients[msg.from_user.id] = c
         await state.update_data(phone=phone, phone_code_hash=sent.phone_code_hash)
         await state.set_state(AddAccount.waiting_code)
-        await msg.answer("✉️ <b>کد ارسال شد</b>\n\nکد رو با اعداد انگلیسی وارد کن:", parse_mode="HTML")
+        await msg.answer("✉️ <b>کد ارسال شد</b>\n\nکد رو با اعداد انگلیسی وارد کن:\n\n⚠️ اگر کد نرسید، ممکنه تلگرام از طریق تماس تلفنی کد بده.", parse_mode="HTML")
     except asyncio.TimeoutError:
-        await msg.answer("❌ <b>Timeout</b>\nسرور تلگرام پاسخ نداد.", parse_mode="HTML")
+        await msg.answer("❌ <b>Timeout</b>\nسرور تلگرام پاسخ نداد. VPN یا پروکسی چک کن.", parse_mode="HTML")
         if c:
             try: await c.disconnect()
             except Exception: pass
@@ -2254,10 +2268,17 @@ async def add_phone(msg: types.Message, state: FSMContext):
     except Exception as e:
         err  = str(e)
         hint = ""
-        if "PHONE_NUMBER_INVALID" in err:  hint = "\n📌 شماره اشتباه"
-        elif "PHONE_NUMBER_BANNED" in err: hint = "\n📌 شماره بن شده"
-        elif "FLOOD" in err.upper():       hint = "\n📌 ۵ دقیقه صبر کن"
-        await msg.answer(f"❌ <b>خطا</b>: <code>{err[:150]}</code>{hint}", parse_mode="HTML")
+        if "PHONE_NUMBER_INVALID" in err:        hint = "\n📌 شماره اشتباه است"
+        elif "PHONE_NUMBER_BANNED" in err:       hint = "\n📌 این شماره توسط تلگرام بن شده"
+        elif "FLOOD" in err.upper():
+            import re as _re
+            wait = _re.search(r"(\d+)", err)
+            secs = int(wait.group(1)) if wait else 300
+            hint = f"\n📌 FloodWait — {secs} ثانیه صبر کن"
+        elif "API_ID_INVALID" in err:           hint = "\n📌 API_ID یا API_HASH نادرست است"
+        elif "PHONE_NUMBER_UNOCCUPIED" in err:  hint = "\n📌 این شماره در تلگرام ثبت‌نام نشده"
+        elif "AUTH_RESTART" in err:             hint = "\n📌 مجدداً تلاش کن"
+        await msg.answer(f"❌ <b>خطا</b>: <code>{err[:200]}</code>{hint}", parse_mode="HTML")
         if c:
             try: await c.disconnect()
             except Exception: pass
