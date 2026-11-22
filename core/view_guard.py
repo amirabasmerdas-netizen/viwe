@@ -20,7 +20,8 @@ from collections import defaultdict
 
 # ───────── تنظیمات ─────────
 MAX_VIEWS_PER_DAY   = 80     # حداکثر ویو روزانه هر اکانت
-MIN_GAP_SEC         = 8.0    # حداقل فاصله بین دو ویو متوالی از یه اکانت (ثانیه)
+MIN_GAP_SEC         = 2.0    # حداقل فاصله بین دو ویو متوالی از یه اکانت (ثانیه)
+# توضیح: تلگرام flood را per-message اعمال می‌کنه، نه per-time؛ ۲ ثانیه کافیه
 MAX_GAP_SEC         = 25.0   # حداکثر فاصله طبیعی
 FLOOD_COOLDOWN_MIN  = 300    # cooldown بعد از flood (ثانیه) — حداقل
 FLOOD_COOLDOWN_MAX  = 900    # cooldown بعد از flood (ثانیه) — حداکثر
