@@ -627,7 +627,9 @@ class GroupListener:
                         return ("V_TIMEOUT", phone)
                     if r.get("ok"):
                         self.stats["views_ok"] += 1
+                        VIEW_GUARD.on_view_ok(phone, msg_id)   # ✅ ثبت در ViewGuard
                     elif "flood" in r:
+                        VIEW_GUARD.on_flood(phone, r["flood"]) # ⏳ cooldown در ViewGuard
                         return self._flood(phone, r)
                     else:
                         return (f"V:{str(r.get('error', ''))[:24]}", phone)
@@ -654,9 +656,23 @@ class GroupListener:
         if not phones:
             self.stats["last_round"] = f"ID={msg_id} | شیفت فعال اکانتی نداره"
             return 0, 0, Counter()
-        random.shuffle(phones)
-        n      = len(phones)
-        window = random.uniform(1.5, 2.5)
+
+        # ── ViewGuard: فقط اکانت‌هایی که مجاز هستن ──
+        eligible = VIEW_GUARD.eligible_phones(phones, msg_id)
+        skipped  = len(phones) - len(eligible)
+        if not eligible:
+            self.stats["last_round"] = f"ID={msg_id} | همه skip (ViewGuard)"
+            db.debug_log("group_listener", "view_done", "SKIP",
+                         f"ID={msg_id} | w{wid} | همه skip (سهمیه/تکرار/flood) | total={len(phones)}")
+            return 0, 0, Counter()
+
+        random.shuffle(eligible)
+        n      = len(eligible)
+        # پنجره زمانی کافی: مثل MultiTargetListener — طبیعی و بدون فشار
+        window = random.uniform(
+            max(n * 0.3, 3.0),
+            max(n * 0.8, 8.0)
+        )
         t0     = _time.time()
 
         async def one(phone, delay):
@@ -664,13 +680,16 @@ class GroupListener:
                 await asyncio.sleep(delay)
             return await self._read_one(phone, msg_id)
 
-        tasks = [
-            asyncio.create_task(one(phone, (i / max(n, 1)) * window + random.uniform(0, 0.15)))
-            for i, phone in enumerate(phones)
-        ]
+        tasks = []
+        for i, phone in enumerate(eligible):
+            base   = (i / max(n, 1)) * window
+            jitter = random.gauss(0, window * 0.08)
+            d      = max(0.0, base + jitter)
+            tasks.append(asyncio.create_task(one(phone, d)))
+
         try:
             results = await asyncio.wait_for(
-                asyncio.gather(*tasks, return_exceptions=True), timeout=window + 10)
+                asyncio.gather(*tasks, return_exceptions=True), timeout=window + 15)
         except asyncio.TimeoutError:
             results = []
             for t in tasks:
