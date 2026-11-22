@@ -17,8 +17,8 @@ from telethon.errors import FloodWaitError
 _VIEW_PAUSED = False
 _ENTITY_CACHE = {}
 _PHONE_LOCKS = {}
-MAX_POST_AGE = 120  # پست‌های <120s پردازش میشن
-MAX_QUEUE = 50      # صف بزرگ‌تر
+MAX_POST_AGE = 30  # فقط پست‌های <30s
+MAX_QUEUE = 20     # اگه صف >20 → پاکسازی
 
 
 def set_view_paused(p):
@@ -248,10 +248,11 @@ class MultiTargetListener:
         random.shuffle(eligible)
         n = len(eligible)
 
-        # پنجره فشرده — همه اکانت‌ها تقریباً همزمان ویو میزنن
+        # پنجره زمانی طبیعی: هر اکانت با فاصله کافی از قبلی
+        # به جای پخش یکنواخت، از توزیع نامنظم استفاده میکنیم
         window = random.uniform(
-            max(n * 0.05, 0.5),   # حداقل ۰.۵ ثانیه
-            max(n * 0.15, 2.0)    # حداکثر ۲ ثانیه
+            max(n * 0.3, 3.0),   # حداقل ۳ ثانیه یا ۳۰۰ms/اکانت
+            max(n * 0.8, 8.0)    # حداکثر ۸ ثانیه یا ۸۰۰ms/اکانت
         )
         t0 = _time.time()
 
@@ -262,15 +263,16 @@ class MultiTargetListener:
 
         tasks = []
         for i, phone in enumerate(eligible):
-            base   = (i / max(n, 1)) * window
-            jitter = random.gauss(0, window * 0.05)
-            d      = max(0.0, base + jitter)
+            # توزیع نامنظم‌تر: بعضی اکانت‌ها زودتر، بعضی دیرتر
+            base = (i / max(n, 1)) * window
+            jitter = random.gauss(0, window * 0.08)  # نویز گاوسی
+            d = max(0.0, base + jitter)
             tasks.append(asyncio.create_task(one(phone, d)))
 
         try:
             results = await asyncio.wait_for(
                 asyncio.gather(*tasks, return_exceptions=True),
-                timeout=window + 10)
+                timeout=window + 15)
         except asyncio.TimeoutError:
             results = []
             for t in tasks:
@@ -333,8 +335,8 @@ async def ensure_group_listener():
 class GroupListener:
     """هر پیام جدید گروه/کانال رو با همه‌ی اکانت‌های شیفت فعال ویو می‌کنه و/یا می‌خونه."""
 
-    MAX_GROUP_MSG_AGE  = 120   # ثانیه — پیام‌های قدیمی‌تر skip می‌شن
-    MAX_GROUP_QUEUE    = 100
+    MAX_GROUP_MSG_AGE  = 60    # ثانیه — پیام‌های قدیمی‌تر skip می‌شن
+    MAX_GROUP_QUEUE    = 50
     POLL_INTERVAL      = 1.5   # ثانیه بین هر poll
     BAD_PHONE_COOLDOWN = 300   # اکانتی که نتونست گروه رو بخونه تا ۵ دقیقه کنار می‌ره
     SETTINGS_EVERY     = 10    # هر چند ثانیه تنظیمات از دیتابیس دوباره خونده بشه
@@ -625,9 +627,7 @@ class GroupListener:
                         return ("V_TIMEOUT", phone)
                     if r.get("ok"):
                         self.stats["views_ok"] += 1
-                        VIEW_GUARD.on_view_ok(phone, msg_id)   # ✅ ثبت در ViewGuard
                     elif "flood" in r:
-                        VIEW_GUARD.on_flood(phone, r["flood"]) # ⏳ cooldown در ViewGuard
                         return self._flood(phone, r)
                     else:
                         return (f"V:{str(r.get('error', ''))[:24]}", phone)
@@ -654,23 +654,9 @@ class GroupListener:
         if not phones:
             self.stats["last_round"] = f"ID={msg_id} | شیفت فعال اکانتی نداره"
             return 0, 0, Counter()
-
-        # ── ViewGuard: فقط اکانت‌هایی که مجاز هستن ──
-        eligible = VIEW_GUARD.eligible_phones(phones, msg_id)
-        skipped  = len(phones) - len(eligible)
-        if not eligible:
-            self.stats["last_round"] = f"ID={msg_id} | همه skip (ViewGuard)"
-            db.debug_log("group_listener", "view_done", "SKIP",
-                         f"ID={msg_id} | w{wid} | همه skip (سهمیه/تکرار/flood) | total={len(phones)}")
-            return 0, 0, Counter()
-
-        random.shuffle(eligible)
-        n      = len(eligible)
-        # پنجره فشرده — همه اکانت‌ها تقریباً همزمان ویو میزنن
-        window = random.uniform(
-            max(n * 0.05, 0.5),
-            max(n * 0.15, 2.0)
-        )
+        random.shuffle(phones)
+        n      = len(phones)
+        window = random.uniform(1.5, 2.5)
         t0     = _time.time()
 
         async def one(phone, delay):
@@ -678,13 +664,10 @@ class GroupListener:
                 await asyncio.sleep(delay)
             return await self._read_one(phone, msg_id)
 
-        tasks = []
-        for i, phone in enumerate(eligible):
-            base   = (i / max(n, 1)) * window
-            jitter = random.gauss(0, window * 0.05)
-            d      = max(0.0, base + jitter)
-            tasks.append(asyncio.create_task(one(phone, d)))
-
+        tasks = [
+            asyncio.create_task(one(phone, (i / max(n, 1)) * window + random.uniform(0, 0.15)))
+            for i, phone in enumerate(phones)
+        ]
         try:
             results = await asyncio.wait_for(
                 asyncio.gather(*tasks, return_exceptions=True), timeout=window + 10)

@@ -486,7 +486,7 @@ async def cb_use_members(cb: types.CallbackQuery, state: FSMContext):
             f"🔢 تعداد اکانت: <b>{'همه' if acc_count == 0 else acc_count}</b> از {total}\n\n"
             f"با کلیک روی «اجرای جوین اجباری» همه اکانت‌ها\n"
             f"توی گروه هدف پیام می‌دن، پیامشون حذف میشه\n"
-            f"و ربات @JOINEEJBARIBOT پیام عضویت اجباری میده.\n"
+            f"و ربات @vornixbazarbot پیام عضویت اجباری میده.\n"
             f"سپس اکانت‌ها عضو کانال‌های دکمه‌ای میشن و\n"
             f"بعد از {leave_days} روز لف میدن.\n\n"
             f"👇 گزینه مورد نظر:",
@@ -750,7 +750,7 @@ async def cb_fj_run(cb: types.CallbackQuery):
     await cb.message.answer(
         "⏳ <b>شروع جوین توی جوین اجباری...</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📌 اکانت‌ها پیام می‌فرستن، ربات @JOINEEJBARIBOT\n"
+        "📌 اکانت‌ها پیام می‌فرستن، ربات @vornixbazarbot\n"
         "پیام رو حذف می‌کنه و لینک کانال‌ها رو میده.\n"
         "سپس اکانت‌ها عضو کانال‌ها میشن.",
         parse_mode="HTML",
@@ -763,7 +763,7 @@ async def cb_fj_run(cb: types.CallbackQuery):
 async def _fj_run_task(cb: types.CallbackQuery, group_id):
     """
     ۱. هر اکانت توی گروه هدف یک پیام می‌فرسته
-    ۲. منتظر میمونه ربات @JOINEEJBARIBOT پیام بده (با دکمه‌های کانال)
+    ۲. منتظر میمونه ربات @vornixbazarbot پیام بده (با دکمه‌های کانال)
     ۳. اکانت‌ها عضو کانال‌های دکمه‌ای میشن
     ۴. بعد از تایم مشخص (fj_leave_days) ترک می‌کنن (scheduler جدا)
     """
@@ -804,12 +804,12 @@ async def _fj_run_task(cb: types.CallbackQuery, group_id):
             sent_msg = await client.send_message(entity, ".")
             await asyncio.sleep(3)
 
-            # ۲. گوش دادن به ربات @JOINEEJBARIBOT برای پیام با دکمه
+            # ۲. گوش دادن به ربات @vornixbazarbot برای پیام با دکمه
             bot_msg = None
             async for message in client.iter_messages(entity, limit=10):
                 sender = getattr(message, "sender", None)
                 username = getattr(sender, "username", "") or ""
-                if username.lower() == "joineejbaribot" and message.buttons:
+                if username.lower() == "vornixbazarbot" and message.buttons:
                     bot_msg = message
                     break
 
@@ -1592,9 +1592,7 @@ async def cb_shift_select(cb: types.CallbackQuery):
 # ─────────────────────────────────────────────────────────
 @router.callback_query(F.data.startswith("sched:"))
 async def cb_smart_sched(cb: types.CallbackQuery):
-    if not is_admin(cb.from_user.id):
-        await cb.answer("⛔ دسترسی ندارید.", show_alert=True)
-        return
+    if not await guard(cb.message): return
     action = cb.data.split(":")[1]
     from core.smart_scheduler import get_smart_scheduler, get_mode, set_mode, _SMART_STATE
 
@@ -2240,27 +2238,15 @@ async def add_phone(msg: types.Message, state: FSMContext):
     await msg.answer(f"📱 <code>{phone}</code>\n⏳ در حال ارسال کد...", parse_mode="HTML")
     c = None
     try:
-        c = TelegramClient(StringSession(), Config.API_ID, Config.API_HASH)
+        c    = TelegramClient(StringSession(), Config.API_ID, Config.API_HASH)
         await asyncio.wait_for(c.connect(), timeout=20)
-        try:
-            sent = await asyncio.wait_for(c.send_code_request(phone), timeout=25)
-        except Exception as migrate_err:
-            # اگر DC متفاوت بود، دوباره connect کن
-            err_str = str(migrate_err)
-            if "PHONE_MIGRATE" in err_str or "NetworkMigrateError" in err_str or "PhoneMigrateError" in err_str:
-                try: await c.disconnect()
-                except Exception: pass
-                c = TelegramClient(StringSession(), Config.API_ID, Config.API_HASH)
-                await asyncio.wait_for(c.connect(), timeout=20)
-                sent = await asyncio.wait_for(c.send_code_request(phone), timeout=25)
-            else:
-                raise
+        sent = await asyncio.wait_for(c.send_code_request(phone), timeout=25)
         _pending_clients[msg.from_user.id] = c
         await state.update_data(phone=phone, phone_code_hash=sent.phone_code_hash)
         await state.set_state(AddAccount.waiting_code)
-        await msg.answer("✉️ <b>کد ارسال شد</b>\n\nکد رو با اعداد انگلیسی وارد کن:\n\n⚠️ اگر کد نرسید، ممکنه تلگرام از طریق تماس تلفنی کد بده.", parse_mode="HTML")
+        await msg.answer("✉️ <b>کد ارسال شد</b>\n\nکد رو با اعداد انگلیسی وارد کن:", parse_mode="HTML")
     except asyncio.TimeoutError:
-        await msg.answer("❌ <b>Timeout</b>\nسرور تلگرام پاسخ نداد. VPN یا پروکسی چک کن.", parse_mode="HTML")
+        await msg.answer("❌ <b>Timeout</b>\nسرور تلگرام پاسخ نداد.", parse_mode="HTML")
         if c:
             try: await c.disconnect()
             except Exception: pass
@@ -2268,17 +2254,10 @@ async def add_phone(msg: types.Message, state: FSMContext):
     except Exception as e:
         err  = str(e)
         hint = ""
-        if "PHONE_NUMBER_INVALID" in err:        hint = "\n📌 شماره اشتباه است"
-        elif "PHONE_NUMBER_BANNED" in err:       hint = "\n📌 این شماره توسط تلگرام بن شده"
-        elif "FLOOD" in err.upper():
-            import re as _re
-            wait = _re.search(r"(\d+)", err)
-            secs = int(wait.group(1)) if wait else 300
-            hint = f"\n📌 FloodWait — {secs} ثانیه صبر کن"
-        elif "API_ID_INVALID" in err:           hint = "\n📌 API_ID یا API_HASH نادرست است"
-        elif "PHONE_NUMBER_UNOCCUPIED" in err:  hint = "\n📌 این شماره در تلگرام ثبت‌نام نشده"
-        elif "AUTH_RESTART" in err:             hint = "\n📌 مجدداً تلاش کن"
-        await msg.answer(f"❌ <b>خطا</b>: <code>{err[:200]}</code>{hint}", parse_mode="HTML")
+        if "PHONE_NUMBER_INVALID" in err:  hint = "\n📌 شماره اشتباه"
+        elif "PHONE_NUMBER_BANNED" in err: hint = "\n📌 شماره بن شده"
+        elif "FLOOD" in err.upper():       hint = "\n📌 ۵ دقیقه صبر کن"
+        await msg.answer(f"❌ <b>خطا</b>: <code>{err[:150]}</code>{hint}", parse_mode="HTML")
         if c:
             try: await c.disconnect()
             except Exception: pass

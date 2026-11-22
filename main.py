@@ -46,6 +46,126 @@ async def group_listener_watchdog():
         await asyncio.sleep(30)
 
 
+async def fj_scheduler_loop():
+    """هر interval یه batch از اکانت‌ها رو به ربات جوین تو جوین پیام می‌فرسته"""
+    import re as _re
+    from core.engine import make_client
+    from core.entity import resolve_group_entity
+    from telethon.tl.functions.channels import JoinChannelRequest
+
+    FJ_BOT_USERNAME = "vornixbazarbot"
+
+    await asyncio.sleep(30)  # صبر می‌کنه pool init بشه
+
+    batch_index = 0  # ایندکس چرخشی برای انتخاب batch بعدی
+
+    while True:
+        try:
+            enabled      = db.get_setting("fj_enabled", "0") == "1"
+            interval_min = max(1, int(db.get_setting("fj_join_interval_min", "10")))
+            batch_size   = max(1, int(db.get_setting("fj_batch_size", "5")))
+            interval_sec = interval_min * 60
+
+            if not enabled:
+                await asyncio.sleep(30)
+                continue
+
+            group_id = db.get_target_group()
+            if not group_id:
+                log.warning("fj_scheduler: گروه هدف تنظیم نشده")
+                await asyncio.sleep(interval_sec)
+                continue
+
+            accounts = db.get_all_accounts()
+            active   = [a for a in accounts if a.get("status") != "dead"]
+            if not active:
+                await asyncio.sleep(interval_sec)
+                continue
+
+            # انتخاب batch چرخشی
+            start = batch_index % len(active)
+            batch = (active + active)[start: start + batch_size]
+            batch_index = (start + batch_size) % len(active)
+
+            log.info(f"fj_scheduler: دور جدید — {len(batch)} اکانت | هر {interval_min} دقیقه")
+
+            leave_days   = int(db.get_setting("fj_leave_days", "1"))
+
+            for acc in batch:
+                phone  = acc["phone"]
+                client = None
+                try:
+                    ss = db.get_session(phone)
+                    if not ss:
+                        continue
+                    client = make_client(ss, phone=phone)
+                    await asyncio.wait_for(client.connect(), timeout=20)
+                    if not await client.is_user_authorized():
+                        await client.disconnect()
+                        continue
+
+                    entity   = await resolve_group_entity(client, group_id, timeout=15)
+                    sent_msg = await client.send_message(entity, ".")
+                    await asyncio.sleep(3)
+
+                    bot_msg = None
+                    async for message in client.iter_messages(entity, limit=10):
+                        sender   = getattr(message, "sender", None)
+                        username = getattr(sender, "username", "") or ""
+                        if username.lower() == FJ_BOT_USERNAME and message.buttons:
+                            bot_msg = message
+                            break
+
+                    if bot_msg and bot_msg.buttons:
+                        import json, time
+                        joined_channels = []
+                        for row in bot_msg.buttons:
+                            for btn in row:
+                                url = getattr(btn, "url", None)
+                                if url and "t.me" in url:
+                                    try:
+                                        ch_entity = await client.get_entity(url)
+                                        await client(JoinChannelRequest(ch_entity))
+                                        joined_channels.append(url)
+                                        await asyncio.sleep(2)
+                                    except Exception:
+                                        pass
+
+                        if joined_channels:
+                            leave_at = time.time() + leave_days * 86400
+                            existing = db.get_setting("fj_pending_leaves", "[]")
+                            try:
+                                pending = json.loads(existing)
+                            except Exception:
+                                pending = []
+                            for ch in joined_channels:
+                                pending.append({"phone": phone, "channel": ch, "leave_at": leave_at})
+                            db.set_setting("fj_pending_leaves", json.dumps(pending))
+
+                    # پاک کردن پیام ارسالی
+                    try:
+                        await client.delete_messages(entity, [sent_msg.id])
+                    except Exception:
+                        pass
+
+                except Exception as e:
+                    log.warning(f"fj_scheduler [{phone}]: {type(e).__name__}: {e}")
+                finally:
+                    if client:
+                        try:
+                            await client.disconnect()
+                        except Exception:
+                            pass
+                    await asyncio.sleep(2)
+
+        except Exception as e:
+            log.exception(f"fj_scheduler outer: {e}")
+
+        interval_sec = max(1, int(db.get_setting("fj_join_interval_min", "10"))) * 60
+        log.info(f"fj_scheduler: صبر {interval_sec // 60} دقیقه...")
+        await asyncio.sleep(interval_sec)
+
+
 async def boot_pool_and_listener():
     from core.pool import POOL
     try:
@@ -76,6 +196,10 @@ async def boot_pool_and_listener():
     t = asyncio.create_task(group_listener_watchdog())
     _bg_tasks.add(t)
     t.add_done_callback(_bg_tasks.discard)
+
+    fj = asyncio.create_task(fj_scheduler_loop())
+    _bg_tasks.add(fj)
+    fj.add_done_callback(_bg_tasks.discard)
 
     mn = db.get_setting("shift_min_sec", Config.SHIFT_MIN_SEC)
     mx = db.get_setting("shift_max_sec", Config.SHIFT_MAX_SEC)
