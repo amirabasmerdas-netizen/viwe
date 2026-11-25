@@ -12,7 +12,7 @@ from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from telethon import TelegramClient
 from telethon.sessions import StringSession
-from telethon.errors import SessionPasswordNeededError
+from telethon.errors import SessionPasswordNeededError, FloodWaitError
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import Config
@@ -2235,34 +2235,83 @@ async def add_phone(msg: types.Message, state: FSMContext):
         await state.clear()
         return
 
-    await msg.answer(f"📱 <code>{phone}</code>\n⏳ در حال ارسال کد...", parse_mode="HTML")
+    status_msg = await msg.answer(f"📱 <code>{phone}</code>\n⏳ در حال ارسال کد...", parse_mode="HTML")
     c = None
-    try:
-        c    = TelegramClient(StringSession(), Config.API_ID, Config.API_HASH)
+
+    async def _do_send_code() -> None:
+        nonlocal c
+        c = TelegramClient(StringSession(), Config.API_ID, Config.API_HASH)
         await asyncio.wait_for(c.connect(), timeout=20)
         sent = await asyncio.wait_for(c.send_code_request(phone), timeout=25)
         _pending_clients[msg.from_user.id] = c
         await state.update_data(phone=phone, phone_code_hash=sent.phone_code_hash)
         await state.set_state(AddAccount.waiting_code)
         await msg.answer("✉️ <b>کد ارسال شد</b>\n\nکد رو با اعداد انگلیسی وارد کن:", parse_mode="HTML")
-    except asyncio.TimeoutError:
-        await msg.answer("❌ <b>Timeout</b>\nسرور تلگرام پاسخ نداد.", parse_mode="HTML")
+
+    async def _cleanup_client() -> None:
         if c:
-            try: await c.disconnect()
-            except Exception: pass
-        await state.clear()
-    except Exception as e:
-        err  = str(e)
-        hint = ""
-        if "PHONE_NUMBER_INVALID" in err:  hint = "\n📌 شماره اشتباه"
-        elif "PHONE_NUMBER_BANNED" in err: hint = "\n📌 شماره بن شده"
-        elif "FLOOD" in err.upper():       hint = "\n📌 ۵ دقیقه صبر کن"
-        await msg.answer(f"❌ <b>خطا</b>: <code>{err[:150]}</code>{hint}", parse_mode="HTML")
-        if c:
-            try: await c.disconnect()
-            except Exception: pass
+            try:
+                await c.disconnect()
+            except Exception:
+                pass
         _pending_clients.pop(msg.from_user.id, None)
-        await state.clear()
+
+    # اول بدون retry امتحان کن — اگه FloodWait بود یه بار صبر کن و دوباره try کن
+    for attempt in range(2):
+        try:
+            await _do_send_code()
+            break  # موفق بود
+        except asyncio.TimeoutError:
+            await _cleanup_client()
+            await state.clear()
+            await msg.answer("❌ <b>Timeout</b>\nسرور تلگرام پاسخ نداد.", parse_mode="HTML")
+            return
+        except FloodWaitError as e:
+            wait_sec = e.seconds
+            if attempt == 0 and wait_sec <= 60:
+                # کمتر از ۶۰ ثانیه — صبر می‌کنیم و retry می‌کنیم
+                await _cleanup_client()
+                c = None
+                mins, secs = divmod(wait_sec, 60)
+                time_str = f"{mins}م {secs}ث" if mins else f"{secs}ث"
+                await status_msg.edit_text(
+                    f"⏳ <b>FloodWait</b> برای <code>{phone}</code>\n"
+                    f"تلگرام {time_str} صبر خواست — داریم صبر می‌کنیم...",
+                    parse_mode="HTML"
+                )
+                await asyncio.sleep(wait_sec + 2)
+                await status_msg.edit_text(
+                    f"📱 <code>{phone}</code>\n⏳ دوباره در حال ارسال کد...",
+                    parse_mode="HTML"
+                )
+                continue
+            else:
+                # بیشتر از ۶۰ ثانیه یا retry دوم هم flood داد
+                await _cleanup_client()
+                await state.clear()
+                mins, secs = divmod(wait_sec, 60)
+                time_str = f"{mins} دقیقه و {secs} ثانیه" if mins else f"{wait_sec} ثانیه"
+                await msg.answer(
+                    f"🚫 <b>محدودیت تلگرام (FloodWait)</b>\n\n"
+                    f"📱 شماره: <code>{phone}</code>\n"
+                    f"⏱ باید <b>{time_str}</b> صبر کنی و دوباره امتحان کنی.\n\n"
+                    f"📌 دلیل: تعداد زیاد درخواست ارسال کد از یه API_ID.",
+                    parse_mode="HTML"
+                )
+                return
+        except Exception as e:
+            await _cleanup_client()
+            await state.clear()
+            err = str(e)
+            hint = ""
+            if "PHONE_NUMBER_INVALID" in err:   hint = "\n📌 فرمت شماره اشتباهه"
+            elif "PHONE_NUMBER_BANNED" in err:  hint = "\n📌 این شماره توسط تلگرام بن شده"
+            elif "AUTH_RESTART" in err:         hint = "\n📌 session خراب شده — دوباره شروع کن"
+            await msg.answer(
+                f"❌ <b>خطا</b>: <code>{err[:200]}</code>{hint}",
+                parse_mode="HTML"
+            )
+            return
 
 
 @router.message(StateFilter(AddAccount.waiting_code))
