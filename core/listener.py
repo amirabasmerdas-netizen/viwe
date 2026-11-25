@@ -230,32 +230,19 @@ class MultiTargetListener:
 
         random.shuffle(eligible)
         n = len(eligible)
-
-        # پنجره زمانی طبیعی: هر اکانت با فاصله کافی از قبلی
-        # به جای پخش یکنواخت، از توزیع نامنظم استفاده میکنیم
-        window = random.uniform(
-            max(n * 0.3, 3.0),   # حداقل ۳ ثانیه یا ۳۰۰ms/اکانت
-            max(n * 0.8, 8.0)    # حداکثر ۸ ثانیه یا ۸۰۰ms/اکانت
-        )
         t0 = _time.time()
 
-        async def one(phone, delay):
-            if delay > 0:
-                await asyncio.sleep(delay)
-            return await self._view_one(phone, msg_id)
+        # همه اکانت‌ها همزمان شروع می‌کنن — بدون delay پخش‌شده
+        # timeout هر اکانت 15s، timeout کل batch = 30s ثابت
+        BATCH_TIMEOUT = 30
 
-        tasks = []
-        for i, phone in enumerate(eligible):
-            # توزیع نامنظم‌تر: بعضی اکانت‌ها زودتر، بعضی دیرتر
-            base = (i / max(n, 1)) * window
-            jitter = random.gauss(0, window * 0.08)  # نویز گاوسی
-            d = max(0.0, base + jitter)
-            tasks.append(asyncio.create_task(one(phone, d)))
+        tasks = [asyncio.create_task(self._view_one(phone, msg_id))
+                 for phone in eligible]
 
         try:
             results = await asyncio.wait_for(
                 asyncio.gather(*tasks, return_exceptions=True),
-                timeout=window + 15)
+                timeout=BATCH_TIMEOUT)
         except asyncio.TimeoutError:
             results = []
             for t in tasks:
