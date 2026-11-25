@@ -924,15 +924,61 @@ async def add_phone(msg: types.Message, state: FSMContext):
     status_msg = await msg.answer(f"📱 <code>{phone}</code>\n⏳ در حال ارسال کد...", parse_mode="HTML")
     c = None
 
+    def _pick_warp_proxy() -> dict | None:
+        try:
+            from config import Config as _Cfg
+            import json as _json, random as _rnd
+            hf = _Cfg.BASE_DIR / "proxies" / "healthy_ports.json"
+            if not hf.exists():
+                return None
+            data = _json.loads(hf.read_text())
+            port_to_ip: dict = data.get("port_to_ip", {})
+            if not port_to_ip:
+                return None
+            port_str = _rnd.choice(list(port_to_ip.keys()))
+            return {
+                "proxy_type": "socks5",
+                "addr": "127.0.0.1",
+                "port": int(port_str),
+                "rdns": True,
+            }
+        except Exception:
+            return None
+
     async def _do_send_code() -> None:
         nonlocal c
-        c = TelegramClient(StringSession(), Config.API_ID, Config.API_HASH)
-        await asyncio.wait_for(c.connect(), timeout=20)
-        sent = await asyncio.wait_for(c.send_code_request(phone), timeout=25)
+        c = TelegramClient(
+            StringSession(),
+            Config.API_ID,
+            Config.API_HASH,
+            connection_retries=3,
+            retry_delay=2,
+            timeout=25,
+        )
+        px = None
+        try:
+            from core.proxy_loader import get_proxy_for
+            px = get_proxy_for(phone)
+        except Exception:
+            pass
+        if not px:
+            px = _pick_warp_proxy()
+        if px:
+            c.set_proxy(px)
+        await asyncio.wait_for(c.connect(), timeout=25)
+        sent = await asyncio.wait_for(c.send_code_request(phone), timeout=30)
         _pending_clients[msg.from_user.id] = c
-        await state.update_data(phone=phone, phone_code_hash=sent.phone_code_hash)
+        await state.update_data(
+            phone=phone,
+            phone_code_hash=sent.phone_code_hash,
+            send_code_proxy=px,
+        )
         await state.set_state(AddAccount.waiting_code)
-        await msg.answer("✉️ <b>کد ارسال شد</b>\n\nکد رو با اعداد انگلیسی وارد کن:", parse_mode="HTML")
+        proxy_note = f" <i>(از WARP پورت {px['port']})</i>" if px else ""
+        await msg.answer(
+            f"✉️ <b>کد ارسال شد</b>{proxy_note}\n\nکد رو با اعداد انگلیسی وارد کن:",
+            parse_mode="HTML",
+        )
 
     async def _cleanup_client() -> None:
         if c:
