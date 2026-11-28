@@ -36,6 +36,7 @@ from bot.keyboards import (
     fixed_channels_list_menu,
 )
 from bot.states import AddAccount, SetShiftTiming, SetGroup, UseMembers, StartBotWizard, FixedChannel
+from core.tasks import spawn
 
 router = Router()
 
@@ -352,11 +353,11 @@ async def cb_group(cb: types.CallbackQuery):
 
     if data == "join":
         await cb.answer("⏳ در حال عضویت همه اکانت‌ها...")
-        asyncio.create_task(_join_group_all_task(cb, group_id))
+        spawn(_join_group_all_task(cb, group_id))
 
     elif data == "check":
         await cb.answer("⏳ در حال بررسی...")
-        asyncio.create_task(_check_group_join_task(cb, group_id))
+        spawn(_check_group_join_task(cb, group_id))
 
     elif data == "info":
         await cb.answer(f"🎯 گروه: {db.fmt_group(group_id)}", show_alert=True)
@@ -812,7 +813,7 @@ async def fch_run(cb: types.CallbackQuery):
     """اجرای جوین + ری‌اکشن روی یک کانال"""
     await cb.answer("⏳ شروع عملیات...", show_alert=True)
     channel_target = cb.data.split("fch:run:")[1]
-    asyncio.create_task(_fixed_channel_run_task(cb.message, channel_target))
+    spawn(_fixed_channel_run_task(cb.message, channel_target))
 
 
 # ─────────────────────────────────────────────────────────
@@ -972,7 +973,7 @@ async def _fixed_channel_run_task(msg: types.Message, channel_target: str):
     # هر کانال listener مستقل دارد؛ از global dict جلوگیری از تکرار
     if channel_target not in _fch_active_listeners:
         _fch_active_listeners.add(channel_target)
-        asyncio.create_task(_fixed_channel_listener(channel_target))
+        spawn(_fixed_channel_listener(channel_target))
 
     await msg.answer(
         f"🎉 <b>اجرا برای <code>@{channel_target}</code> کامل شد</b>\n"
@@ -1301,7 +1302,7 @@ async def cb_fj_leave_all(cb: types.CallbackQuery):
         "━━━━━━━━━━━━━━━━━━━━━━",
         parse_mode="HTML",
     )
-    asyncio.create_task(_fj_leave_all_task(cb))
+    spawn(_fj_leave_all_task(cb))
 
 
 @router.callback_query(F.data == "fj:run")
@@ -1319,7 +1320,7 @@ async def cb_fj_run(cb: types.CallbackQuery):
         "سپس اکانت‌ها عضو کانال‌ها میشن.",
         parse_mode="HTML",
     )
-    asyncio.create_task(_fj_run_task(cb, group_id))
+    spawn(_fj_run_task(cb, group_id))
 
 
 # ─── Task: اجرای جوین اجباری ───
@@ -1563,7 +1564,7 @@ async def mem_start_bot_link(msg: types.Message, state: FSMContext):
         f"در حال اجرا...",
         parse_mode="HTML",
     )
-    asyncio.create_task(_start_bot_all_task(msg, username, start_param))
+    spawn(_start_bot_all_task(msg, username, start_param))
 
 
 async def _start_bot_all_task(msg: types.Message, username: str, start_param: str | None):
@@ -1741,7 +1742,7 @@ async def mem_join_count(msg: types.Message, state: FSMContext):
         f"در حال اجرا...",
         parse_mode="HTML",
     )
-    asyncio.create_task(_join_target_group_all_task(msg, group_target, limit=count))
+    spawn(_join_target_group_all_task(msg, group_target, limit=count))
 
 
 async def _join_target_group_all_task(msg: types.Message, group_target, limit: int = 0):
@@ -2034,7 +2035,7 @@ async def cb_ns_set(cb: types.CallbackQuery):
         return
 
     old = POOL.num_shifts
-    POOL.set_num_shifts(n)
+    await asyncio.to_thread(POOL.set_num_shifts, n)
 
     # توزیع مجدد round-robin اکانت‌ها روی شیفت‌های جدید
     phones = list(POOL.all_phones)
@@ -2640,7 +2641,7 @@ async def add_session(msg: types.Message, state: FSMContext):
         pool_ok = False
         try:
             from core.pool import POOL
-            t = asyncio.create_task(POOL.add_account_live(phone_key))
+            t = spawn(POOL.add_account_live(phone_key))
             POOL._bg.add(t)
             t.add_done_callback(POOL._bg.discard)
             pool_ok = True
@@ -2771,7 +2772,7 @@ async def add_session_file(msg: types.Message, state: FSMContext, bot: Bot):
         pool_ok = False
         try:
             from core.pool import POOL
-            t = asyncio.create_task(POOL.add_account_live(phone_key))
+            t = spawn(POOL.add_account_live(phone_key))
             POOL._bg.add(t)
             t.add_done_callback(POOL._bg.discard)
             pool_ok = True
@@ -3145,7 +3146,7 @@ async def add_code(msg: types.Message, state: FSMContext):
         pool_ok = False
         try:
             from core.pool import POOL
-            t = asyncio.create_task(POOL.add_account_live(phone))
+            t = spawn(POOL.add_account_live(phone))
             POOL._bg.add(t)
             t.add_done_callback(POOL._bg.discard)
             pool_ok = True
@@ -3243,7 +3244,7 @@ async def add_password(msg: types.Message, state: FSMContext):
         pool_ok = False
         try:
             from core.pool import POOL
-            t = asyncio.create_task(POOL.add_account_live(phone))
+            t = spawn(POOL.add_account_live(phone))
             POOL._bg.add(t)
             t.add_done_callback(POOL._bg.discard)
             pool_ok = True
@@ -3697,7 +3698,7 @@ async def sbw_got_leave_days(msg: types.Message, state: FSMContext):
         "در حال اجرا...",
         parse_mode="HTML",
     )
-    asyncio.create_task(
+    spawn(
         _sbw_run_task(msg, username, start_param, fj_links, acc_count, leave_days)
     )
 

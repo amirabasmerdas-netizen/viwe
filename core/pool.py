@@ -48,7 +48,6 @@ class ClientPool:
                 return v
         except Exception:
             pass
-        from config import Config
         n = getattr(Config, "NUM_SHIFTS", 4)
         return max(1, min(n, 20))
 
@@ -150,7 +149,7 @@ class ClientPool:
             if not ss:
                 self.blacklist.add(phone)
                 raise RuntimeError("session خالیه")
-            client = make_client(ss, phone=phone)
+            client = make_client(ss, phone=phone, shared=False)
             await asyncio.wait_for(client.connect(), timeout=25)
             ok = await asyncio.wait_for(client.is_user_authorized(), timeout=10)
             if not ok:
