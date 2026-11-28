@@ -1662,9 +1662,8 @@ async def mem_join_group_link(msg: types.Message, state: FSMContext):
     link_match = re.match(r"(?:https?://)?t\.me/(?:joinchat/|\+)?([A-Za-z0-9_+\-]+)", raw)
     if link_match:
         slug = link_match.group(1)
-        # اگه hash دعوت‌نامه‌ست (joinchat) کل لینک رو نگه می‌داریم
         if re.match(r"[A-Za-z0-9_\-]{16,}", slug) and not slug.startswith("+"):
-            group_target = raw   # لینک دعوت خصوصی — کامل لازمه
+            group_target = raw
         else:
             group_target = slug.lstrip("+") if slug.startswith("+") else slug
     elif raw.startswith("@"):
@@ -1678,30 +1677,90 @@ async def mem_join_group_link(msg: types.Message, state: FSMContext):
         await msg.answer("❌ لینک معتبر نیست. دوباره بفرست.")
         return
 
-    await state.clear()
+    total = len(db.get_all_accounts())
     display = raw if isinstance(group_target, str) and raw.startswith("https") else f"<code>{group_target}</code>"
+
+    await state.update_data(join_group_target=group_target if isinstance(group_target, str) else str(group_target),
+                            join_group_is_int=isinstance(group_target, int))
+    await state.set_state(UseMembers.waiting_join_count)
+    await msg.answer(
+        f"👥 <b>تعداد اکانت برای عضویت</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🎯 گروه: {display}\n"
+        f"📦 کل اکانت‌ها: <b>{total}</b>\n\n"
+        f"چند تا اکانت عضو بشن؟\n"
+        f"<i>(عدد بفرست — یا <b>همه</b> برای همه اکانت‌ها)</i>",
+        reply_markup=cancel_menu(),
+        parse_mode="HTML",
+    )
+
+
+@router.message(StateFilter(UseMembers.waiting_join_count))
+async def mem_join_count(msg: types.Message, state: FSMContext):
+    if not await guard(msg): return
+    raw = (msg.text or "").strip()
+
+    data = await state.get_data()
+    group_target_raw = data.get("join_group_target", "")
+    is_int = data.get("join_group_is_int", False)
+    group_target = int(group_target_raw) if is_int else group_target_raw
+
+    total = len(db.get_all_accounts())
+
+    if raw in ("همه", "all", "0"):
+        count = total
+    else:
+        # پشتیبانی از اعداد فارسی
+        _fa = str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789")
+        raw_en = raw.translate(_fa)
+        if not raw_en.isdigit():
+            await msg.answer(
+                f"❌ عدد معتبر نیست.\n"
+                f"یه عدد بین ۱ تا {total} بفرست، یا <b>همه</b> برای همه اکانت‌ها.",
+                parse_mode="HTML",
+            )
+            return
+        count = int(raw_en)
+        if count < 1:
+            await msg.answer("❌ حداقل ۱ اکانت.")
+            return
+        if count > total:
+            await msg.answer(
+                f"⚠️ فقط {total} اکانت موجوده. همه رو عضو می‌کنم.",
+                parse_mode="HTML",
+            )
+            count = total
+
+    await state.clear()
+    display = f"<code>{group_target}</code>"
     await msg.answer(
         f"⏳ <b>شروع عضویت در گروه</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"🎯 گروه: {display}\n\n"
+        f"🎯 گروه: {display}\n"
+        f"🔢 تعداد: <b>{count}</b> اکانت\n\n"
         f"در حال اجرا...",
         parse_mode="HTML",
     )
-    asyncio.create_task(_join_target_group_all_task(msg, group_target))
+    asyncio.create_task(_join_target_group_all_task(msg, group_target, limit=count))
 
 
-async def _join_target_group_all_task(msg: types.Message, group_target):
-    """با همه اکانت‌ها یکی یکی توی گروه هدف عضو می‌شه با تاخیر."""
+async def _join_target_group_all_task(msg: types.Message, group_target, limit: int = 0):
+    """با اکانت‌ها یکی یکی توی گروه هدف عضو می‌شه با تاخیر.
+    limit=0 یعنی همه اکانت‌ها. limit>0 یعنی حداکثر limit تا اکانت.
+    """
     from core.engine import make_client
     from core.entity import resolve_group_entity
     from telethon.tl.functions.channels import JoinChannelRequest
     from telethon.tl.functions.messages  import ImportChatInviteRequest
     import random
 
-    accounts = db.get_all_accounts()
-    if not accounts:
+    all_accounts = db.get_all_accounts()
+    if not all_accounts:
         await msg.answer("❌ هیچ اکانتی موجود نیست.")
         return
+
+    # اعمال محدودیت تعداد
+    accounts = all_accounts[:limit] if limit and limit < len(all_accounts) else all_accounts
 
     ok = 0
     errors: list[str] = []
@@ -2581,7 +2640,9 @@ async def add_session(msg: types.Message, state: FSMContext):
         pool_ok = False
         try:
             from core.pool import POOL
-            asyncio.create_task(POOL.add_account_live(phone_key))  # fire-and-forget
+            t = asyncio.create_task(POOL.add_account_live(phone_key))
+            POOL._bg.add(t)
+            t.add_done_callback(POOL._bg.discard)
             pool_ok = True
         except Exception as _pe:
             db.debug_log("handlers", "pool_add_session", "WARN", f"{type(_pe).__name__}: {_pe}")
@@ -2710,7 +2771,9 @@ async def add_session_file(msg: types.Message, state: FSMContext, bot: Bot):
         pool_ok = False
         try:
             from core.pool import POOL
-            asyncio.create_task(POOL.add_account_live(phone_key))  # fire-and-forget
+            t = asyncio.create_task(POOL.add_account_live(phone_key))
+            POOL._bg.add(t)
+            t.add_done_callback(POOL._bg.discard)
             pool_ok = True
         except Exception as _pe:
             db.debug_log("handlers", "pool_add_session_file", "WARN", f"{type(_pe).__name__}: {_pe}")
@@ -3082,7 +3145,9 @@ async def add_code(msg: types.Message, state: FSMContext):
         pool_ok = False
         try:
             from core.pool import POOL
-            asyncio.create_task(POOL.add_account_live(phone))  # fire-and-forget
+            t = asyncio.create_task(POOL.add_account_live(phone))
+            POOL._bg.add(t)
+            t.add_done_callback(POOL._bg.discard)
             pool_ok = True
         except Exception as _pe:
             db.debug_log("handlers", "pool_add", "WARN", f"{type(_pe).__name__}: {_pe}")
@@ -3174,10 +3239,23 @@ async def add_password(msg: types.Message, state: FSMContext):
         await c.disconnect()
         _pending.pop(msg.from_user.id, None)
         acc_id = db.add_account(phone, ss)
+
+        pool_ok = False
+        try:
+            from core.pool import POOL
+            t = asyncio.create_task(POOL.add_account_live(phone))
+            POOL._bg.add(t)
+            t.add_done_callback(POOL._bg.discard)
+            pool_ok = True
+        except Exception as _pe:
+            db.debug_log("handlers", "pool_add_2fa", "WARN", f"{type(_pe).__name__}: {_pe}")
+
         await msg.answer(
-            f"✅ <b>اکانت با 2FA اضافه شد!</b>\n\n"
-            f"👤 {me.first_name}\n"
-            f"🎫 {acc_id}",
+            f"✅ <b>اکانت با 2FA اضافه شد!</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"👤 نام: <b>{me.first_name}</b>\n"
+            f"🎫 شناسه: <code>{acc_id}</code>\n"
+            f"🔌 اتصال به pool: {'✅' if pool_ok else '⚠️ بعداً خودکار وصل میشه'}",
             reply_markup=main_menu(),
             parse_mode="HTML",
         )
